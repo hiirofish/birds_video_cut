@@ -286,8 +286,9 @@ def detect_motion(video_path, detection_dir, video_dir, threshold=25, min_area=3
                 time_collision_counter[video_time] = 0
                 file_suffix = ""
             
-            # ハイライト画像のみ保存
-            highlight_filename = f"motion_{video_time}{file_suffix}_highlight.jpg"
+            # ファイル名を取得してハイライト画像名に含める
+            base_filename = get_filename_without_extension(video_path)
+            highlight_filename = f"{base_filename}_motion_{video_time}{file_suffix}_highlight.jpg"
             
             # 検出領域を強調した画像
             if result["largest_contour"] is not None:
@@ -355,10 +356,11 @@ def detect_motion(video_path, detection_dir, video_dir, threshold=25, min_area=3
         merged_events.append(current_merged_event)
     
     # 動画ファイルの保存
+    base_filename = get_filename_without_extension(video_path)
     for idx, event in enumerate(merged_events):
         start_time_str = format_video_time(event["start_frame"], fps)
         end_time_str = format_video_time(event["end_frame"], fps)
-        out_filename = f"motion_{start_time_str}_to_{end_time_str}.mp4"
+        out_filename = f"{base_filename}_motion_{start_time_str}_to_{end_time_str}.mp4"
         out_path = os.path.join(video_dir, out_filename)
         
         # 動画の保存設定
