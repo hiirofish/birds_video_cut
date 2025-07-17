@@ -27,10 +27,11 @@ def get_filename_without_extension(file_path):
     """ファイルパスから拡張子を除いたファイル名を取得する関数"""
     return os.path.splitext(os.path.basename(file_path))[0]
 
-def get_output_directories(video_path, base_detection_dir="output_detection", base_video_dir="output_video"):
+def get_output_directories(video_path, base_detection_dir="temporary_detection", base_video_dir="output_video"):
     """動画ファイル名に基づいて出力ディレクトリ名を生成する関数"""
     filename = get_filename_without_extension(video_path)
-    detection_dir = f"{base_detection_dir}_{filename}"
+    # 変更点: 中間ファイルは指定ディレクトリ配下のサブフォルダに保存
+    detection_dir = os.path.join(base_detection_dir, filename)
     video_dir = f"{base_video_dir}_{filename}"
     return detection_dir, video_dir
 
@@ -288,7 +289,7 @@ def detect_motion(video_path, detection_dir, video_dir, threshold=25, min_area=3
             
             # ファイル名を取得してハイライト画像名に含める
             base_filename = get_filename_without_extension(video_path)
-            highlight_filename = f"{base_filename}_motion_{video_time}{file_suffix}_highlight.jpg"
+            highlight_filename = f"motion_{video_time}{file_suffix}_highlight.jpg"
             
             # 検出領域を強調した画像
             if result["largest_contour"] is not None:
@@ -359,8 +360,9 @@ def detect_motion(video_path, detection_dir, video_dir, threshold=25, min_area=3
     base_filename = get_filename_without_extension(video_path)
     for idx, event in enumerate(merged_events):
         start_time_str = format_video_time(event["start_frame"], fps)
-        end_time_str = format_video_time(event["end_frame"], fps)
-        out_filename = f"{base_filename}_motion_{start_time_str}_to_{end_time_str}.mp4"
+        
+        # ★改良点3: 出力ファイル名の変更
+        out_filename = f"{start_time_str}_{base_filename}_motion.mp4"
         out_path = os.path.join(video_dir, out_filename)
         
         # 動画の保存設定
@@ -408,7 +410,7 @@ def detect_motion(video_path, detection_dir, video_dir, threshold=25, min_area=3
         if os.path.exists(temp_file):
             os.remove(temp_file)
         
-        log_message(f"動画保存完了: {out_filename} ({start_time_str}から{end_time_str}まで)", True, log_file)
+        log_message(f"動画クリップ保存完了: {out_filename}", True, log_file)
     
     # 処理結果のサマリー
     elapsed = time.time() - start_process_time
@@ -435,7 +437,7 @@ def detect_motion(video_path, detection_dir, video_dir, threshold=25, min_area=3
     
     return motion_frames > 0
 
-def process_all_videos(input_dir, base_detection_dir="output_detection", base_video_dir="output_video", 
+def process_all_videos(input_dir, base_detection_dir="temporary_detection", base_video_dir="output_video", 
                       threshold=25, min_area=300, frame_skip=10, debug=False, start_time="", end_time="", 
                       pre_seconds=10, post_seconds=10, merge_threshold=30, skip_initial_seconds=60):
     """inputディレクトリ内のすべての動画ファイルを処理する関数"""
@@ -457,15 +459,22 @@ def process_all_videos(input_dir, base_detection_dir="output_detection", base_vi
     
     # 各動画ファイルを処理
     total_start_time = time.time()
-    successful_count = 0
+    processed_count = 0
+    skipped_count = 0
     
     for i, video_path in enumerate(video_files, 1):
+        # 出力ディレクトリ名を生成
+        detection_dir, video_dir = get_output_directories(video_path, base_detection_dir, base_video_dir)
+
+        # ★改良点1: 処理済みファイルのスキップ
+        if os.path.isdir(video_dir):
+            print(f"\n✓ スキップ: 出力フォルダ '{os.path.basename(video_dir)}' が既に存在するため、'{os.path.basename(video_path)}' の処理をスキップします。")
+            skipped_count += 1
+            continue
+
         print(f"\n{'='*50}")
         print(f"処理中 ({i}/{len(video_files)}): {os.path.basename(video_path)}")
         print(f"{'='*50}")
-        
-        # 出力ディレクトリ名を生成
-        detection_dir, video_dir = get_output_directories(video_path, base_detection_dir, base_video_dir)
         
         # 出力ディレクトリの作成
         os.makedirs(detection_dir, exist_ok=True)
@@ -489,8 +498,8 @@ def process_all_videos(input_dir, base_detection_dir="output_detection", base_vi
                 skip_initial_seconds=skip_initial_seconds
             )
             
+            processed_count += 1
             if success:
-                successful_count += 1
                 print(f"✓ 処理完了: {os.path.basename(video_path)}")
             else:
                 print(f"⚠ 動きが検出されませんでした: {os.path.basename(video_path)}")
@@ -503,15 +512,17 @@ def process_all_videos(input_dir, base_detection_dir="output_detection", base_vi
     print(f"\n{'='*50}")
     print(f"全体の処理結果")
     print(f"{'='*50}")
-    print(f"処理済み動画: {successful_count}/{len(video_files)}")
+    print(f"処理済み動画: {processed_count}/{len(video_files) - skipped_count} (スキップ: {skipped_count}件)")
     print(f"総処理時間: {total_elapsed:.1f}秒")
-    print(f"平均処理時間: {total_elapsed/len(video_files):.1f}秒/動画")
+    if processed_count > 0:
+        print(f"平均処理時間: {total_elapsed/processed_count:.1f}秒/動画")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='鳥の巣観測動画から動きを検出するツール')
     parser.add_argument('input_path', nargs='?', default='input', 
                        help='入力動画のパスまたはinputディレクトリ（デフォルト: input）')
-    parser.add_argument('--detection_dir', default='output_detection', help='検出結果の出力ディレクトリベース名')
+    # ★改良点2: 中間ファイル用ディレクトリの変更
+    parser.add_argument('--detection_dir', default='temporary_detection', help='検出画像などの中間ファイルを出力する親ディレクトリ名')
     parser.add_argument('--video_dir', default='output_video', help='動画出力ディレクトリベース名')
     parser.add_argument('--threshold', '-t', type=int, default=50, help='動き検出の閾値')
     parser.add_argument('--min_area', '-a', type=int, default=300, help='動きと判断する最小領域サイズ')
