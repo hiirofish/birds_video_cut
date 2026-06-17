@@ -394,6 +394,28 @@ def merge_videos(mmdd, detect_out_root, final_out_dir):
                        capture_output=True)
         
         print(f"🎉 結合完了！ -> {output_mp4}")
+def normalize_video(input_path):
+    output_path = input_path.replace(".mp4", "_fixed.mp4")
+    # コマンドをより堅牢に定義
+    cmd = [
+        "ffmpeg", "-y", 
+        "-i", input_path,
+        "-c", "copy",
+        "-video_track_timescale", "15360",
+        output_path
+    ]
+    try:
+        # check=Trueでエラー時に例外を投げる
+        subprocess.run(cmd, capture_output=True, check=True)
+        # 成功したらファイルを置き換え
+        os.replace(output_path, input_path)
+        print(f"✅ 正規化成功: {os.path.basename(input_path)}")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"❌ 正規化失敗: {os.path.basename(input_path)}")
+        print(e.stderr.decode())
+        return False
+    
 # ==========================================
 # メイン実行処理
 # ==========================================
@@ -407,12 +429,23 @@ if __name__ == "__main__":
     
     detect_out_root = os.path.join("work", f"{mmdd}-detection")
     final_out_dir = "marugoto"
+
+    # Clean previous detection results to prevent stale clip contamination
+    if os.path.exists(detect_out_root):
+        print(f"🧹 前回の検知結果を削除: {detect_out_root}")
+        shutil.rmtree(detect_out_root)
     
     print(f"📂 出力先: {detect_out_root}, {final_out_dir}")    
     videos = get_video_files(input_dir)
     if not videos:
         print(f"❌ {input_dir} フォルダに動画がありません。")
         sys.exit(1)
+
+  # ★ここに配置：動体検知処理へ進む前に全動画を正規化する
+    print(f"\n⚙️ 全動画のタイムベース(tbn)を正規化中...")
+    for vp in videos:
+        normalize_video(vp)
+    # ★ここまで
 
     params = {
         'threshold': 50, 'min_area': 300, 'frame_skip': 20,

@@ -9,7 +9,7 @@
 | スクリプト | 用途 | 特徴 |
 |---|---|---|
 | `smart_bird_pipeline.py` | **全自動パイプライン（推奨）** | YouTube APIで配信終了を検知 → DL → 動体検知 → 結合まで全自動。寝る前にコマンド1回で朝には完成 |
-| `fast_bird_pipeline.py` | 本番用（手動DL済みの場合） | 検知→切り出し→OP/ED付き結合を1コマンドで実行。再エンコードなし（`-c copy`）で高速 |
+| `fast_bird_pipeline.py` | 本番用（手動DL済みの場合） | tbn正規化 → 検知 → 切り出し → OP/ED付き結合を1コマンドで実行。再エンコードなし（`-c copy`）で高速 |
 | `motion_detector.py` | 旧版（切り出しのみ） | コマンドライン引数で細かく調整可能。結合は別途手動で行う |
 
 > **⚠️ 入力フォルダの違いに注意**
@@ -46,9 +46,20 @@ AIzaSy_YOUR_API_KEY_HERE
 
 ### yt-dlp のインストール
 
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) は `youtube-dl` の活発なフォークで、YouTubeの仕様変更への追従が速く、フォーマット指定（`-f`オプション）が柔軟です。
+
 ```bash
 pip install yt-dlp
 ```
+
+### YouTube Data API v3 のセットアップ
+
+1. [Google Cloud Console](https://console.cloud.google.com/) にログインし、新しいプロジェクトを作成
+2. 検索バーで「YouTube Data API v3」を検索し、有効化
+3. 「認証情報」→「＋認証情報を作成」→「APIキー」でキーを発行
+4. **【重要】** キーの設定画面で「APIの制限」→「YouTube Data API v3」のみにチェックを入れて保存
+
+> 💡 今回の用途は「配信ステータスの監視」（公開情報の読み取り）だけなので、OAuth 2.0 ではなくAPIキーで十分です。
 
 ---
 
@@ -111,6 +122,7 @@ YTDLP_FORMAT = "bv*[vcodec^=avc][height<=720]+ba[ext=m4a]/bv*[vcodec^=avc]+ba[ex
 - **インテリジェントなクリッピング**: 検出されたシーンの前後を含めた動画クリップを、音声付きで自動生成します。
 - **適応型感度調整**: 映像の明るさをリアルタイムで分析し、日中・夕方・夜間で検出感度を自動で最適化。天候の変化による誤検出を抑制します。
 - **複数ファイル一括処理**: フォルダ内の全動画を自動検出し、連続して処理できます。
+- **🆕 タイムベース(tbn)正規化**: DL後の動画のtbnを統一し、`-c copy` 結合時のタイムスタンプ破壊を防止（v5.1）
 - **🆕 YouTube API連携の全自動パイプライン**: 配信終了検知→DL→動体検知→結合をワンコマンドで（v5.0）
 - **🆕 プリフライトチェック**: DL前にコーデックを事前確認し、AV1/VP9混在による結合破壊を防止（v5.0）
 - **OP/ED自動結合**: オープニングに日付テキストを自動焼き込み、エンディングと合わせて1本のハイライト動画を生成（v4.0）
@@ -167,11 +179,34 @@ python fast_bird_pipeline.py 0610
 
 これだけで以下が自動実行されます：
 
-1. `0610/` 内の全動画を最大4プロセス並列で動体検知
-2. 検知区間を `-c copy`（再エンコードなし）でクリップ切り出し
-3. 全クリップをソース動画順 → 時系列順にソート
-4. OP（日付テキスト自動焼き込み）＋ 全クリップ ＋ ED を結合
-5. `marugoto/0610_output.mp4` として出力
+1. 前回の検知結果をクリーンアップ（古いクリップの混入を防止）
+2. **全動画のタイムベース(tbn)を `1/15360` に正規化**（`-c copy` 結合の安定化）
+3. `0610/` 内の全動画を最大4プロセス並列で動体検知
+4. 検知区間を `-c copy`（再エンコードなし）でクリップ切り出し
+5. 全クリップをソース動画順 → 時系列順にソート
+6. OP（日付テキスト自動焼き込み）＋ 全クリップ ＋ ED を結合
+7. `marugoto/0610_output.mp4` として出力
+
+### ⚠️ タイムベース(tbn)正規化について
+
+YouTubeからDLした動画は、同じコーデック・同じ解像度でも**タイムベース(tbn)が異なる**ことがあります（例: 1/15360 vs 1/90000）。tbnが不揃いのまま `-c copy` で結合すると、タイムスタンプが破壊されて再生時間が異常な値（56年など）になります。
+
+`fast_bird_pipeline.py` は動体検知処理に入る前に、全動画のtbnを `1/15360` に統一します。この処理は `-c copy` ベースなので再エンコードは発生せず、一瞬で完了します。
+
+```python
+def normalize_video(input_path):
+    """Normalize video timebase to 1/15360 for consistent -c copy concat."""
+    output_path = input_path.replace(".mp4", "_fixed.mp4")
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-c", "copy",
+        "-video_track_timescale", "15360",
+        output_path
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
+    os.replace(output_path, input_path)
+```
 
 ### 入力動画の命名規則
 
@@ -190,10 +225,10 @@ python fast_bird_pipeline.py 0610
 本編動画の仕様を確認し、それに合わせてエンコードしてください：
 
 ```bash
-# 本編動画の仕様を確認
+# Check source video specs
 ffprobe -v quiet -show_streams 0610/0610-1.mp4
 
-# エンディングを本編に合わせて変換する例（720x720, 30fps, AAC 44100Hz）
+# Re-encode ending to match source (example: 720x720, 30fps, AAC 44100Hz)
 ffmpeg -i sozai/ending.mp4 \
   -c:v libx264 -pix_fmt yuv420p -s 720x720 -r 30 \
   -c:a aac -ar 44100 \
@@ -269,16 +304,16 @@ input/
 **全ファイルを一括処理:**
 
 ```bash
-# inputフォルダ内の全動画を処理（標準設定）
+# Process all videos in input/ (default settings)
 python motion_detector.py
 
-# 高速処理（並列度を上げる）
+# Faster processing (increase parallelism)
 python motion_detector.py --parallel 3 --batch_size 40
 
-# 特定のディレクトリ内の全動画を処理
+# Process all videos in a specific directory
 python motion_detector.py /path/to/videos
 
-# パラメータを指定して複数ファイル処理
+# Process with custom parameters
 python motion_detector.py input --threshold 40 --min_area 500
 ```
 
@@ -369,6 +404,7 @@ OpenCVの`MOG2 (Mixture of Gaussians)`背景差分法をコア技術として採
 - **動きが全く検出されない**: `min_area` や `threshold` の値を下げてみてください。`--debug`オプション（旧版）を付けて実行し、コンソールに表示される「面積」や「輝度」の値を確認してください。
 - **誤検出が多すぎる**: 木の葉の揺れなどを拾っている可能性があります。`min_area`の値を大きくしてみてください。
 - **結合後の動画が再生できない / 映像が乱れる**: OP/ED素材と本編のフォーマット（解像度・FPS・コーデック）が一致していない可能性があります。`ffprobe` で双方を確認し、`ffmpeg` でフォーマットを統一してください。
+- **結合後の再生時間が異常（56年、26時間など）**: 入力動画のタイムベース(tbn)が不揃いの可能性があります。`fast_bird_pipeline.py` のtbn正規化処理が正しく動作しているか確認してください。手動で確認する場合は `ffprobe -v quiet -show_entries stream=time_base <動画ファイル>` で各ファイルのtbnを比較できます。
 - **smart_bird_pipeline.py でプリフライトチェックが失敗する**: YouTube側のAV1変換がまだ完了しておらず、H.264が選択できない状態です。時間を置いて再実行してください。
 - **処理が遅すぎる**: `frame_skip` を大きくしてください（旧版では `--parallel` の値を増やすことも可能）。
 - **PowerDirectorでエラーが出る**: 旧版で `--min_duration 2.0` を設定し、2秒以上の動画のみ出力するようにしてください。
@@ -405,6 +441,12 @@ OpenCVの`MOG2 (Mixture of Gaussians)`背景差分法をコア技術として採
 ---
 
 ## 📝 更新履歴
+
+### v5.1 (2026-06) - タイムベース正規化 & 安定性向上
+
+- ✅ `normalize_video()` による入力動画のtbn正規化（`-video_track_timescale 15360`）を追加
+- ✅ YouTubeアーカイブのtbn不一致による `-c copy` 結合破壊を根本解決
+- ✅ 検知前の `work/` ディレクトリクリーンアップ（古いクリップの混入防止）
 
 ### v5.0 (2026-06) - YouTube API連携の全自動パイプライン
 
