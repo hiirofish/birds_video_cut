@@ -8,3 +8,4 @@ config.txt
 __pycache__/
 *.pyc
 logs/
+.claude/settings.local.json
