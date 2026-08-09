@@ -139,28 +139,44 @@ def parse_iso8601_duration(text):
 def find_unprocessed_dates(api_key, channel_id):
     """Return [(mmdd, video_list), ...] for unprocessed dates inside the
     lookback window, oldest first."""
+    # Two passes: the plain query keeps in-progress broadcasts visible (needed
+    # for the "still live -> skip this date" check below), while the
+    # eventType=completed query is immune to the channel's own edited
+    # re-uploads ("まるごと版"/"ハイライト版") crowding finished archives out
+    # of the maxResults window. Without the second pass, a burst of edited
+    # uploads can silently push one of a day's two livestream archives out of
+    # range, so only half that day's footage/chat ever gets processed.
     search_url = "https://www.googleapis.com/youtube/v3/search"
-    search_params = {
-        "part": "id", "channelId": channel_id, "order": "date",
-        "type": "video", "maxResults": 30, "key": api_key,
-    }
-    search_res = requests.get(search_url, params=search_params, timeout=30).json()
-    video_ids = [item["id"]["videoId"] for item in search_res.get("items", [])]
+    video_ids = set()
+    for extra_params in ({}, {"eventType": "completed"}):
+        search_params = {
+            "part": "id", "channelId": channel_id, "order": "date",
+            "type": "video", "maxResults": 30, "key": api_key,
+            **extra_params,
+        }
+        search_res = requests.get(search_url, params=search_params, timeout=30).json()
+        video_ids.update(item["id"]["videoId"] for item in search_res.get("items", []))
     if not video_ids:
         return []
 
+    # videos.list caps at 50 ids per request; the two searches above can
+    # together return up to 60 unique ids, so fetch in batches.
     video_url = "https://www.googleapis.com/youtube/v3/videos"
-    video_params = {
-        "part": "snippet,liveStreamingDetails,contentDetails",
-        "id": ",".join(video_ids), "key": api_key,
-    }
-    video_res = requests.get(video_url, params=video_params, timeout=30).json()
+    video_ids = list(video_ids)
+    video_items = []
+    for i in range(0, len(video_ids), 50):
+        video_params = {
+            "part": "snippet,liveStreamingDetails,contentDetails",
+            "id": ",".join(video_ids[i:i + 50]), "key": api_key,
+        }
+        video_res = requests.get(video_url, params=video_params, timeout=30).json()
+        video_items.extend(video_res.get("items", []))
 
     today_jst = datetime.now(timezone(timedelta(hours=9))).date()
     cutoff = today_jst - timedelta(days=LOOKBACK_DAYS)
     grouped = {}
 
-    for item in video_res.get("items", []):
+    for item in video_items:
         if "liveStreamingDetails" not in item:
             continue
 
