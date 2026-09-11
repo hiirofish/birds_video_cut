@@ -56,6 +56,16 @@ TRANSIENT_BACKOFF = [30, 60, 120, 300]  # seconds; last value repeats
 # duration the YouTube API reported. Catches truncated / half-merged files.
 DURATION_TOLERANCE = 0.02            # 2%
 
+# 送出が枠の途中で落ちた日は、アーカイブの実体が枠の尺よりはるかに短くなる。
+# APIが返す duration は「枠が開いていた時間」なので、この差はAPIからは判別できず、
+# 尺チェックが永久に不合格になってその日全体が中断してしまう。
+# そういうスロットは運用者が明示的に宣言する:
+#     SHORT_SLOT_OK="0826-2" python smart_bird_pipeline.py
+# 宣言したスロットだけ尺の比較を省く（コーデックと末尾デコードの検証は残る）。
+SHORT_SLOT_OK = {
+    s.strip() for s in os.environ.get("SHORT_SLOT_OK", "").split(",") if s.strip()
+}
+
 # Keep stdout readable: --quiet suppresses informational chatter,
 # --progress keeps the single-line progress bar. They must be used together.
 QUIET_PROGRESS = ["--quiet", "--no-warnings", "--progress"]
@@ -269,8 +279,10 @@ def can_decode_near_end(path, seconds_before_end=5):
         return False
     return result.returncode == 0 and result.stderr.strip() == ""
 
-def verify_download(path, expected_duration_sec):
+def verify_download(path, expected_duration_sec, allow_short=False):
     """Check a finished download is a usable, complete H.264 file.
+    allow_short=True skips only the length comparison (送出断のスロット用)。
+    末尾が実際にデコードできるかの検査は省かない。
     Returns (ok: bool, reason: str)."""
     info = probe_media(path)
     if info is None:
@@ -280,7 +292,8 @@ def verify_download(path, expected_duration_sec):
         return False, f"コーデックが H.264 ではない ({info['vcodec']})"
 
     if expected_duration_sec > 0:
-        if info["duration"] < expected_duration_sec * (1 - DURATION_TOLERANCE):
+        if (not allow_short
+                and info["duration"] < expected_duration_sec * (1 - DURATION_TOLERANCE)):
             return False, (f"尺が短い（{human_hms(info['duration'])} / "
                            f"期待 {human_hms(expected_duration_sec)}）")
 
@@ -532,7 +545,8 @@ def try_candidates_for_client(mmdd, video, expected_filepath, label,
         elapsed = time.time() - started
 
         if ok:
-            good, reason = verify_download(expected_filepath, video["duration_sec"])
+            good, reason = verify_download(expected_filepath, video["duration_sec"],
+                                            allow_short=video.get("short_ok", False))
             if good:
                 say(mmdd, f"  ✅ {label} 完了 ({reason}) 所要 {human_hms(elapsed)}")
                 cleanup_stray_parts(expected_filepath, keep_parts=False)
@@ -569,7 +583,8 @@ def try_candidates_for_client(mmdd, video, expected_filepath, label,
             say(mmdd, "  ⏹  中断されました。")
             raise
         if ok:
-            good, reason = verify_download(expected_filepath, video["duration_sec"])
+            good, reason = verify_download(expected_filepath, video["duration_sec"],
+                                            allow_short=video.get("short_ok", False))
             if good:
                 say(mmdd, f"  ✅ {label} 完了 ({reason})")
                 cleanup_stray_parts(expected_filepath, keep_parts=False)
@@ -590,7 +605,8 @@ def download_one_video(mmdd, video, expected_filepath, index, total, session_cli
     label = f"[{index}/{total}]"
 
     if os.path.exists(expected_filepath):
-        ok, reason = verify_download(expected_filepath, video["duration_sec"])
+        ok, reason = verify_download(expected_filepath, video["duration_sec"],
+                                            allow_short=video.get("short_ok", False))
         if ok:
             say(mmdd, f"  ✅ {label} 既存ファイルは正常です ({reason})")
             return True, session_client
@@ -755,8 +771,10 @@ def process_one_date(mmdd, video_list):
 
     total_expected = 0
     for idx, video in enumerate(video_list, 1):
+        video["short_ok"] = f"{mmdd}-{idx}" in SHORT_SLOT_OK
+        note = "  ⚠️ 送出断として尺チェックを省略" if video["short_ok"] else ""
         say(mmdd, f"  {idx}本目 ({video['start_time'].strftime('%H:%M')}開始): "
-                  f"状況={video['status']} 長さ={human_hms(video['duration_sec'])}")
+                  f"状況={video['status']} 長さ={human_hms(video['duration_sec'])}{note}")
         total_expected += video["duration_sec"]
         if video["status"] != "none":
             say(mmdd, "  ⏭  まだ配信中/処理中の動画があるため、この日付はスキップします。")
