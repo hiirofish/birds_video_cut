@@ -12,6 +12,7 @@
 | `fast_bird_pipeline.py` | 本番用（手動DL済みの場合） | tbn正規化 → 検知 → 切り出し → OP/ED付き結合を1コマンドで実行。再エンコードなし（`-c copy`）で高速 |
 | `motion_detector.py` | 旧版（切り出しのみ） | コマンドライン引数で細かく調整可能。結合は別途手動で行う |
 | `cut_clips.py` / `compile_shorts.py` | コメントベースのショート生成（**POC**） | チャットログの時報コメントから見どころを切り抜き、字幕焼き込み→スワイプ転換で結合。詳細は下記「🎬 コメントベースのショート自動生成」参照 |
+| `upload_videos.py` | YouTubeへの公開アップロード | まるごと版とショート版を公開し、それぞれの再生リストへ振り分け。二重投稿防止つき。詳細は下記「📤 YouTubeへの自動アップロード」参照 |
 
 > **⚠️ 入力フォルダの違いに注意**
 > - `smart_bird_pipeline.py`: 入力フォルダの作成・動画DLを自動で行う → `python smart_bird_pipeline.py`
@@ -193,7 +194,7 @@ marugoto/MMDD_clips.json          (クリップ候補。人がレビュー・修
 marugoto/shorts/MMDD_<id>.mp4     (コメントごとの短尺クリップ、字幕焼き込み済み)
         │  ③ python compile_shorts.py MMDD（決定的処理＝コード）
         ▼
-marugoto/MMDD_short.mp4           (スワイプ転換でつないだ1本のショート)
+marugoto/MMDD_short_DAY<n>_<title>.mp4  (スワイプ転換でつないだショート。3分超なら_part1_/_part2_)
 ```
 
 「意味の判断が要る部分（①）」と「機械的に正確さが要る部分（②③）」を分けているのがポイントです。
@@ -213,6 +214,7 @@ Claude Codeのスキル（`.claude/skills/extract-clips/SKILL.md`）としてル
 | 分単位のみ | `9:36 入口に来てくれた` | 秒は`:00`と仮定し、後方に大きめの余白（`confidence: low`） |
 | 並列した複数時刻 | `16:12:00と16:41からお口見えたよ!` | 1コメントから複数クリップを生成 |
 | 挨拶・意味なし | `おはようございます` | スキップ |
+| 配信者本人(`@Take1bit`)の発言 | `いつもコメントありがとうございます` | 内容によらずスキップ |
 | 元コメントへの返信 | 「時報ありがとうございます、〜見えましたね」 | 元クリップの`replies`にマージ（**この判断はAIでないと出来ない**） |
 
 出力は `marugoto/MMDD_clips.json`。`clips`（採用）と`skipped`（除外、理由付き）に分かれており、
@@ -243,16 +245,75 @@ sudo apt install tesseract-ocr   # tesseractコマンド本体
 ### ③ `python compile_shorts.py MMDD` — スワイプ転換で1本に結合
 
 ②で作った個別クリップを、`marugoto/MMDD_clips.json` の並び順のまま `ffmpeg` の `xfade`/`acrossfade`
-フィルタでつなぎ、スワイプ風の画面切り替え（デフォルト `slideleft`、0.5秒）を入れて1本の
-`marugoto/MMDD_short.mp4` に結合します（個別クリップは`marugoto/shorts/`のテンポラリのままです）。
-転換の種類は `compile_shorts.py` 内の
+フィルタでつなぎ、スワイプ風の画面切り替え（デフォルト `slideleft`、0.5秒）を入れて結合します
+（個別クリップは`marugoto/shorts/`のテンポラリのままです）。転換の種類は `compile_shorts.py` 内の
 `TRANSITION` を変更すれば `wipeleft` / `fade` など `xfade` がサポートする他の効果に変えられます。
+
+出力名は `marugoto/MMDD_short_DAY<n>_<title>.mp4`。アップロード待ちのファイルが複数溜まっても
+見分けられるよう、DAY数（`sozai/date_list.txt` 由来）と①が付けたタイトルが入ります。
+
+尺が `MAX_SHORT_DUR`（180秒＝ショートの上限）を超える場合は、クリップの並びを時系列のまま
+**2本に自動分割**します（`_part1_` / `_part2_`）。割る位置は前後の尺が均等に近くなるクリップの
+境目で、それぞれに専用のオープニングが付き、後半のタイトルには `clips.json` の `title_part2`
+（①が必ず用意する2つ目のタイトル）が使われます。
 
 ### 既知の制限
 
-- ①はClaude Codeセッション上で人が都度実行する想定で、`smart_bird_pipeline.py` のような無人自動実行は未対応
-- OCR座標が720x720決め打ち（解像度が変わる日には非対応）
+- ①はClaude Codeのセッション上で実行する。`daily-shorts` スキルで⓪〜④を一気通貫にできるが、cronのような完全な無人実行ではない
+- OCR座標は720x720基準（1080x1080で配信された日は720に縮小してから読む）
 - 返信マージは同じクリップの字幕に静的に重ねているだけで、返信が来たタイミングに合わせた表示切り替えはしていない
+- 時刻の書かれていない実況コメントは「投稿時刻＋その日のズレ（OCRで実測）−12秒」で位置を推定するので誤差がある
+
+---
+
+## 📤 YouTubeへの自動アップロード（upload_videos.py）
+
+完成した動画を YouTube Data API v3 で公開し、種類ごとに決まった再生リストへ振り分けます。
+タイトル・概要欄・タグは、それまで手動で投稿していた書式をそのまま再現します。
+
+| 種類 | ファイル | 再生リスト（タイトルのキーワードで自動検索） |
+|---|---|---|
+| まるごと版 | `marugoto/MMDD_output.mp4` | 「動体検知」を含むリスト |
+| ショート版 | `marugoto/MMDD_short[_partN]_DAY<n>_<title>.mp4` | 「2年目」を含むリスト |
+
+ショートになるか通常の動画になるかは、長さと画面の形でYouTubeが判定するため、API側では指定しません。
+
+### セットアップ
+
+1. Google Cloud Console で YouTube Data API v3 を有効にしたプロジェクトに、**OAuthクライアントID（デスクトップアプリ）**を作成
+2. OAuth同意画面の公開ステータスを「本番環境」にする（「テスト」のままだと7日ごとに認証し直しになる）
+3. ダウンロードしたJSONをリポジトリ直下に `uploader_credentials.json` として置く
+4. 初回実行時に表示されるURLをブラウザで開いて許可すると、`uploader_token.json` が作られる
+
+`uploader_credentials.json` と `uploader_token.json` は `.gitignore` 済みです。**絶対にコミットしないでください。**
+
+```bash
+pip install google-api-python-client google-auth-oauthlib
+```
+
+### 実行方法
+
+```bash
+python upload_videos.py 0910 --dry-run          # 認証・再生リストの確認と、アップ内容の表示だけ
+python upload_videos.py 0910                    # 非公開でアップ（テスト用）
+python upload_videos.py 0910 --privacy public   # 公開でアップ（本番）
+python upload_videos.py 0910 --only short       # 片方の種類だけ
+```
+
+- 概要欄とタグの文面は `sozai/description_short.txt` / `sozai/description_full.txt` / `sozai/upload_tags.txt` を編集すれば変えられます
+- シーズンが変わったら `upload_videos.py` の `SEASON` / `PLAYLIST_KEYWORDS` を更新してください（そのままだと「2年目」のリストに入り続けます）
+
+### 二重投稿の防止
+
+- `marugoto/MMDD_upload.json` にアップ済みの動画IDと再生リストへの追加状況を記録し、再実行時は残りの手順だけ行います
+- 同じタイトルの動画がすでに再生リストにあれば（手動で投稿済みの日など）アップしません
+
+### ⚠️ ハマりどころ
+
+- **未監査プロジェクトの非公開ロック**：ドキュメント上は「2020年7月28日以降に作られた未監査のAPIプロジェクトから `videos.insert` した動画は非公開にロックされる」とありますが、2026年9月時点の実測では公開できました。後からロックされる可能性はあるので、本格運用するなら監査の申請を推奨します
+- **再生リストの位置指定**：自動並べ替えのリストに `position` を指定すると `manualSortRequired` で拒否されます。スクリプトは先頭指定を試し、拒否されたら位置指定なしで追加します（公開日順の自動並べ替えなら、公開した動画は自動で先頭に来ます）
+- **WSLでの初回認証**：URLはWindows側のブラウザで開きます。待ち受けは1回きりなので、待っている間に `curl localhost:<ポート>` などで様子を見ると、その1回を消費して `MismatchingStateError` で失敗します
+- **チャットリプレイは翌日まで取れない**：配信当日にショートを作って公開すると、コメントが欠けたまま公開されます。`daily-shorts` スキルは「当日分はダウンロードまで、前日分をショート作成→公開」の1日遅れで回します
 
 ---
 
@@ -590,6 +651,15 @@ OpenCVの`MOG2 (Mixture of Gaussians)`背景差分法をコア技術として採
 ---
 
 ## 📝 更新履歴
+
+### v7.0 (2026-09) - ショート生成の強化とYouTube自動アップロード
+
+- ✅ `upload_videos.py` を新規追加 — まるごと版・ショート版を公開し、種類ごとの再生リストへ振り分け（二重投稿防止、`--dry-run`）
+- ✅ `daily-shorts` スキルを追加 — 「本日分をやって」でDL→動体検知→ショート作成→公開まで一気通貫（チャットリプレイが揃うまで1日待つ）
+- ✅ `compile_shorts.py` — 3分を超える日は2本に自動分割、出力名にDAY数とタイトルを入れる、DAY100超えでもオープニングの文字がはみ出ないよう自動縮小
+- ✅ `cut_clips.py` — 夕暮れ時のOCR失敗対策（前処理を3種類に）、1080x1080で配信された日も720に縮小して読む
+- ✅ `smart_bird_pipeline.py` — 送出が途中で落ちた枠を `SHORT_SLOT_OK` で宣言し、尺チェックだけ省略できるように
+- ✅ `extract-clips` スキル — 時刻の無い実況コメントは、その日のブラケット時刻と映像の焼き込み時刻のズレをOCRで実測してから位置を決める
 
 ### v6.0 (2026-07) - ダウンロード基盤の全面刷新（メジャーバージョンアップ）
 
