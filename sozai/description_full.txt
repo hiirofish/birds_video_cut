@@ -1,0 +1,43 @@
+自宅ベランダに巣を作ったコシアカツバメの一日をまるごと記録しました。
+ラズパイ＋Webカメラの撮影から、動体検知システムで動きのあったシーンを抽出しています。
+
+📺 関連リンク
+ライブ配信（リアルタイム）はこちら
+https://www.youtube.com/@Take1bit/live
+
+これまでの記録（時系列）
+
+🌱 2025年5月〜： 1年目・1回目の子育て
+https://take1bit.com/tsubame/live_list/
+
+🌿 2025年7月〜： 1年目・2回目の子育て
+https://take1bit.com/tsubame/koshiaka_part2/
+
+🍀 2026年〜： 2年目シーズン開始
+
+全ての動画はこちらから（再生リスト）
+https://www.youtube.com/playlist?list=PLyEy1UU9PhSJE7GKzp5G0sonj2djf9QkA
+
+📷 撮影システムについて（ラズパイ活用）
+ラズパイ＋Webカメラで自作した撮影システムです。
+詳しい作り方はこちら：
+https://take1bit.com/computer-ja/bird-watching-camera-system/
+
+💡 このプロジェクトについて
+子どもの自然教育と、野鳥との共生を目的とした観察記録です。
+研究や教育目的でのご利用は自由です（ご連絡いただけると励みになります）。
+
+チャンネル登録、高評価をいただけると更新の励みになります！ 🙇
+
+🌏 English Description
+Observing the life of Red-rumped Swallows on my balcony using an AI-powered Raspberry Pi system.
+
+📺 Watch the Full Journey (Playlist):
+https://www.youtube.com/playlist?list=PLyEy1UU9PhSJE7GKzp5G0sonj2djf9QkA
+
+📷 System Details & Code:
+https://take1bit.com/computer-ja/bird-watching-camera-system/
+
+🐤 Subscribe for more bird life!
+
+#ツバメ観察 #ラズパイ #ライブカメラ #定点観察 #巣作り #birdwatching #swallow #RedRumpedSwallow #AI #Wildlife

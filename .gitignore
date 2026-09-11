@@ -5,6 +5,9 @@ marugoto/
 temporary_detection/
 output_video_*/
 config.txt
+uploader_credentials.json
+uploader_token.json
+*:Zone.Identifier
 __pycache__/
 *.pyc
 logs/
