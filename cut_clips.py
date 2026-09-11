@@ -40,6 +40,37 @@ FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
 # resolution or overlay layout ever changes.
 OVERLAY_CROP = "crop=330:34:390:686"
 
+# The crop above (and the preprocessing tuned on top of it) is calibrated for a
+# 720x720 frame, but YouTube sometimes serves a slot at 1080x1080 -- on those
+# the crop lands on empty sky and every frame comes back as "OCR失敗".
+# Scaling such a source back to 720 wide keeps the calibration valid, and doing
+# it for the cut itself too keeps the burned-in captions the same size as every
+# other day (and keeps compile_shorts' clips uniform).
+NORMALIZE_WIDTH = 720
+_width_cache = {}
+
+
+def source_width(video_path):
+    if video_path not in _width_cache:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width", "-of",
+             "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True)
+        try:
+            _width_cache[video_path] = int(result.stdout.strip())
+        except ValueError:
+            _width_cache[video_path] = NORMALIZE_WIDTH
+    return _width_cache[video_path]
+
+
+def normalize_filter(video_path):
+    """A `scale=...,` filter prefix for sources that aren't the calibrated
+    720px wide, or "" when no rescaling is needed."""
+    if source_width(video_path) == NORMALIZE_WIDTH:
+        return ""
+    return f"scale={NORMALIZE_WIDTH}:-2,"
+
 # How far the naive (log start-time + ffprobe duration) estimate is allowed
 # to be from a source file's nominal bounds before we stop considering that
 # file a candidate at all. Generous because we've observed ~8 min of hidden
@@ -49,6 +80,34 @@ DRIFT_MARGIN_SEC = 1200
 
 OCR_MAX_ITER = 5
 OCR_TOL_SEC = 2
+
+OVERLAY_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})")
+
+
+def overlay_variants(im):
+    """Preprocessings to try, in order, on the cropped overlay.
+
+    The 3x upscale is the original and reads most frames. When the overlay
+    happens to sit over a bright, low-contrast background tesseract returns
+    garbage for it, and a hard threshold reads cleanly instead -- and on a
+    few other frames it's the other way round. Measured over 36 random frames
+    from three source files: 34/36 for either alone, 36/36 trying both.
+
+    Both of those still fail together around dusk, when the overlay sits over
+    a dim, noisy background: in the 18:45-18:47 stretch of 0823-2.mp4 they
+    missed 8 of 42 consecutive frames, which is enough to strand a clip. That
+    is what the third variant is for -- thresholding AFTER the upscale, at a
+    higher cut, reads every one of those frames. Kept last so it only runs
+    when the other two have already failed; over 48 random frames from four
+    source files it never disagreed with them.
+
+    Do NOT add a tessedit_char_whitelist here: it makes the LSTM engine fail
+    on every frame, including ones that currently read fine.
+    """
+    yield im.resize((im.width * 3, im.height * 3))
+    yield im.point(lambda x: 255 if x > 140 else 0)
+    yield im.resize((im.width * 3, im.height * 3)).point(
+        lambda x: 255 if x > 180 else 0)
 
 
 def hms_to_sec(hms):
@@ -102,21 +161,22 @@ def grab_overlay_time(video_path, offset_sec):
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-ss", str(max(0.0, offset_sec)), "-i", video_path,
-             "-frames:v", "1", "-vf", OVERLAY_CROP, png_path],
+             "-frames:v", "1",
+             "-vf", normalize_filter(video_path) + OVERLAY_CROP, png_path],
             capture_output=True)
         if not os.path.exists(png_path) or os.path.getsize(png_path) == 0:
             return None
         try:
             im = Image.open(png_path).convert("L")
-            im = im.resize((im.width * 3, im.height * 3))
         except Exception:
             return None
-        text = pytesseract.image_to_string(im, config="--psm 7")
-        m = re.search(r"(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})", text)
-        if not m:
-            return None
-        _, _, _, h, mi, s = (int(g) for g in m.groups())
-        return h * 3600 + mi * 60 + s
+        for variant in overlay_variants(im):
+            m = OVERLAY_RE.search(
+                pytesseract.image_to_string(variant, config="--psm 7"))
+            if m:
+                _, _, _, h, mi, s = (int(g) for g in m.groups())
+                return h * 3600 + mi * 60 + s
+        return None
     finally:
         if os.path.exists(png_path):
             os.unlink(png_path)
@@ -217,7 +277,7 @@ def cut_clip(mmdd, clip, sources, out_dir):
 
     src_file, off_start, off_end = resolved
     duration = off_end - off_start
-    vf = build_drawtext(clip)
+    vf = normalize_filter(src_file) + build_drawtext(clip)
     out_path = os.path.join(out_dir, f"{mmdd}_{clip['id']}.mp4")
 
     cmd = [
