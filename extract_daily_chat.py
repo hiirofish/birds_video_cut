@@ -45,8 +45,9 @@ def list_recent_video_ids(api_key, channel_id, limit=120):
     search.list is not dependable for this: its index lags behind, and on
     2026-09-18 it returned only nine videos for this channel, which silently
     dropped 0914's morning slot (that day was then built from the evening
-    archive alone). The uploads playlist is exhaustive and costs 1 quota unit
-    per page instead of search's 100.
+    archive alone). The uploads playlist is exhaustive, and it draws on the
+    10,000-unit/day shared pool at 1 unit per page rather than search.list's
+    own 100-calls-a-day bucket.
     """
     playlist_id = get_uploads_playlist_id(api_key, channel_id)
     if not playlist_id:

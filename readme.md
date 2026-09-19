@@ -170,7 +170,7 @@ ffmpeg -v error -sseof -30 -i video.mp4 -frames:v 1 -f null -
 
 片方の枠しか見つからないと、その日はもう片方だけでダイジェストとチャットログが作られます。**出来上がりを見ても「朝は映っていない日」としか見えない**ので、欠けたこと自体に気づけないのが厄介なところです。
 
-**対策**: チャンネルの「アップロード済み動画」プレイリスト（`channels.list` → `relatedPlaylists.uploads`）を `playlistItems.list` で全ページ列挙します。こちらは取りこぼしが無く、APIクォータも1ページ1単位（`search.list` は1回100単位）で済みます。`smart_bird_pipeline.py` と `extract_daily_chat.py` の両方を同じ方式にしてあります。
+**対策**: チャンネルの「アップロード済み動画」プレイリスト（`channels.list` → `relatedPlaylists.uploads`）を `playlistItems.list` で全ページ列挙します。こちらは取りこぼしが無く、クォータの面でも有利です。2026年9月時点の公式ドキュメントでは `search.list` は**1日100回までの専用枠**、`playlistItems.list` は他のエンドポイントと共有の **10,000単位/日**から1ページ1単位なので、200本を全列挙しても4単位で済みます。`smart_bird_pipeline.py` と `extract_daily_chat.py` の両方を同じ方式にしてあります。
 
 ---
 
