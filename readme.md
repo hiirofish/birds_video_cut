@@ -306,10 +306,13 @@ python upload_videos.py 0910 --dry-run          # 認証・再生リストの確
 python upload_videos.py 0910                    # 非公開でアップ（テスト用）
 python upload_videos.py 0910 --privacy public   # 公開でアップ（本番）
 python upload_videos.py 0910 --only short       # 片方の種類だけ
+python upload_videos.py 0910 --notify none      # 購読者に通知せずにアップ
 ```
 
 - 概要欄とタグの文面は `sozai/description_short.txt` / `sozai/description_full.txt` / `sozai/upload_tags.txt` を編集すれば変えられます
 - シーズンが変わったら `upload_videos.py` の `SEASON` / `PLAYLIST_KEYWORDS` を更新してください（そのままだと「2年目」のリストに入り続けます）
+- **購読者への通知はショート版のみ**です（`NOTIFY_SUBSCRIBERS`）。まるごと版は毎日上がる長尺なので、通知すると同じ人に1日2回届いてしまいます。`--notify all` / `--notify none` で上書きできます
+- `notifySubscribers` は `videos.insert` の時にだけ読まれ、**既定値は true**。後から変えられないので、通知したくない動画は最初からそう指定して上げる必要があります
 - アップ後は `videos.list` で公開状態を、`playlistItems.list` で再生リストの何番目かを読み直して確認します（`daily-shorts` スキルの手順）。公開で上げれば先頭に並ぶので、末尾のままなら公開になっていません
 
 ### 二重投稿の防止

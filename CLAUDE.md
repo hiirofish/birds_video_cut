@@ -23,7 +23,7 @@
 ① extract-clips スキル                            チャットログ → クリップ候補 JSON（コメントの意味判断＝AI）
 ② python cut_clips.py MMDD                        切り出し＋字幕焼き込み
 ③ python compile_shorts.py MMDD                   OP/EDつきで結合 → marugoto/MMDD_short_DAY<n>_<title>.mp4
-④ python upload_videos.py MMDD --privacy public   まるごと版・ショート版を公開し、それぞれの再生リストに追加
+④ python upload_videos.py MMDD --privacy public   まるごと版・ショート版を公開し、それぞれの再生リストに追加（通知はショート版のみ）
 ```
 
 ⓪は**1時間近くかかる**ので必ずバックグラウンド実行＋終了待ちにする（詳細は `daily-shorts` スキル）。

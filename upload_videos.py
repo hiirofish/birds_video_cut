@@ -12,7 +12,10 @@ length and shape alone, so nothing here marks it. Titles, descriptions and
 tags reproduce what has been posted by hand until now; the description/tag
 text lives in sozai/ so it can be edited without touching this file.
 
-Usage: python upload_videos.py MMDD [--privacy private|unlisted|public] [--only short|full] [--dry-run]
+Subscribers are notified about the short only; see NOTIFY_SUBSCRIBERS.
+
+Usage: python upload_videos.py MMDD [--privacy private|unlisted|public]
+       [--only short|full] [--notify auto|all|none] [--dry-run]
 
 Auth: uploader_credentials.json (OAuth desktop client) -> uploader_token.json.
 The first run prints a URL to open in the browser.
@@ -53,6 +56,13 @@ CHANNEL_HANDLE = "@take1bit"
 # playlist goes on matching "2年目" and new videos land in the old one.
 SEASON = "2年目"
 PLAYLIST_KEYWORDS = {"short": "2年目", "full": "動体検知"}
+
+# Only the shorts are worth pinging subscribers about. The motion-detection
+# digest goes up every single day and is long, so notifying on it too would put
+# two notifications a day in front of the same people. videos.insert reads
+# notifySubscribers when the video is created and defaults to true; there is no
+# way to change it afterwards, so a video uploaded without this is already sent.
+NOTIFY_SUBSCRIBERS = {"short": True, "full": False}
 
 DESCRIPTION_FILES = {
     "short": os.path.join(SOZAI_DIR, "description_short.txt"),
@@ -188,12 +198,13 @@ def find_playlist(youtube, keyword):
     return matches[0]
 
 
-def upload(youtube, path, body):
+def upload(youtube, path, body, notify_subscribers):
     """Resumable upload with retries; returns the new video ID. A retry picks
     the same upload session back up, so a dropped connection doesn't start a
     second copy of the video."""
     media = MediaFileUpload(path, mimetype="video/mp4", chunksize=CHUNK_SIZE, resumable=True)
-    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media,
+                                      notifySubscribers=notify_subscribers)
     response, retries = None, 0
     while response is None:
         try:
@@ -305,6 +316,8 @@ def main():
     parser.add_argument("mmdd")
     parser.add_argument("--privacy", choices=["private", "unlisted", "public"], default="private")
     parser.add_argument("--only", choices=["short", "full"], help="片方の種類だけアップする")
+    parser.add_argument("--notify", choices=["auto", "all", "none"], default="auto",
+                        help="購読者への通知。auto=ショート版のみ通知（既定）、all=両方、none=どちらもしない")
     parser.add_argument("--dry-run", action="store_true",
                         help="認証・チャンネル・再生リストを確認して、アップする内容を表示するだけ")
     args = parser.parse_args()
@@ -340,8 +353,10 @@ def main():
             print(f"\n🎬 {name} ({os.path.getsize(path) / 1e6:.1f}MB)")
             print(f"   タイトル: {title}（{len(title)}文字）")
             print(f"   概要欄: {DESCRIPTION_FILES[kind]}（{len(descriptions[kind])}文字）/ タグ {len(tags)}個")
+            notify = {"auto": NOTIFY_SUBSCRIBERS[kind], "all": True, "none": False}[args.notify]
             print(f"   再生リスト: {playlist_title}")
             print(f"   公開設定: {args.privacy}")
+            print(f"   購読者への通知: {'する' if notify else 'しない'}")
 
             entry = ledger.get(name)
             duplicate = already[kind].get(title_key(title))
@@ -370,8 +385,9 @@ def main():
                         "containsSyntheticMedia": False,  # real camera footage
                     },
                 }
-                video_id = upload(youtube, path, body)
+                video_id = upload(youtube, path, body, notify)
                 entry = ledger[name] = {"video_id": video_id, "privacy": args.privacy, "title": title,
+                                        "notified": notify,
                                         "uploaded_at": datetime.now().isoformat(timespec="seconds")}
                 save_ledger(args.mmdd, ledger)
                 print(f"   ✅ アップロード完了: https://youtu.be/{video_id}")
