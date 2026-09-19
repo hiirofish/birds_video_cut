@@ -5,7 +5,8 @@ title card, from sozai/opening_short.mp4) is prepended, and a subscribe/thanks
 overlay is faded in over the last few seconds -- no extra runtime added.
 
 Usage: python compile_shorts.py MMDD
-Output: marugoto/MMDD_short.mp4
+Output: marugoto/MMDD_short_DAY<n>_<title>.mp4, or, when the result would run
+        past MAX_SHORT_DUR, two files _part1_/_part2_ with a title each.
 """
 import os
 import sys
@@ -25,10 +26,38 @@ FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
 TRANSITION = "slideleft"
 TRANSITION_DUR = 0.5  # seconds of overlap between consecutive clips
 
+# A Short may not run longer than 3 minutes, so a day with too many clips is
+# split into two videos (part1/part2), each with its own opening and title.
+MAX_SHORT_DUR = 180.0
+
 # Last N seconds of the finished video where the subscribe/thanks overlay
 # fades in. Does not extend the video -- it's composited over existing tail.
 ENDING_OVERLAY_DUR = 3.0
 ENDING_FADE_DUR = 0.5
+
+# Opening card text. These are the sizes we'd like; the real size is shrunk
+# per-date by fit_fontsize() so the line always fits the frame.
+OPENING_DATE_FONTSIZE = 64
+OPENING_TITLE_FONTSIZE = 54
+OPENING_BOX_BORDER = 14  # boxborderw; the drawn box is text_w + 2x this
+
+
+def fit_fontsize(text, width, preferred, box_border=OPENING_BOX_BORDER):
+    """Largest size <= preferred at which `text` still fits inside `width`.
+
+    Both opening lines are full-width Japanese glyphs, whose advance width
+    equals the font size exactly in NotoSansCJK-Bold (verified: 12 glyphs at
+    64 measure 768px), so the drawn width is len(text) * size + 2 * box_border.
+
+    This used to be a flat 64. Once the counter reached DAY100 the date line
+    grew a glyph -- "８月１１日　ＤＡＹ１０６" is 12 glyphs = 768 + 28 = 796px --
+    and ran off both edges of the 720px frame. Shrinking to fit rather than
+    hard-coding a smaller size keeps short dates large and still survives the
+    longest line date_list.txt can produce ("１０月３１日　ＤＡＹ１８７", 13 glyphs).
+    """
+    if not text:
+        return preferred
+    return max(1, min(preferred, (width - 2 * box_border) // len(text)))
 
 
 def esc(s):
@@ -71,23 +100,60 @@ def load_date_list(mmdd):
     return date_jp, "DAY ??"
 
 
-def build_opening(mmdd, title, width, height, fps, tmp_dir):
+def build_out_path(mmdd, day_text, title, part=None):
+    """marugoto/MMDD_short[_partN]_DAY106_タイトル.mp4
+
+    The DAY counter and title are in the name so the finished files can be
+    told apart at a glance when several days are queued up for upload; the
+    date_list.txt text is full-width for the opening card, so narrow it here.
+    """
+    narrow = str.maketrans("ＤＡＹ０１２３４５６７８９", "DAY0123456789")
+    day = day_text.translate(narrow)
+    name = f"{mmdd}_short"
+    if part:
+        name += f"_part{part}"
+    for token in (day, title):
+        token = "".join(c for c in token if c not in '/\\:*?"<>|. ')
+        if token:
+            name += f"_{token}"
+    return os.path.join(OUT_DIR, name + ".mp4")
+
+
+def estimate_total(opening_dur, durations):
+    """Length of the finished video -- every join overlaps by TRANSITION_DUR,
+    and there is one join per clip (the opening counts as the first piece)."""
+    return opening_dur + sum(durations) - TRANSITION_DUR * len(durations)
+
+
+def split_point(durations):
+    """Index to cut the clip list at so the two parts come out as even as
+    possible. Chronological order is preserved -- we only choose a boundary,
+    never reorder, so part2 always picks up where part1 left off."""
+    return min(range(1, len(durations)),
+               key=lambda i: abs(sum(durations[:i]) - sum(durations[i:])))
+
+
+def build_opening(mmdd, title, width, height, fps, tmp_dir, suffix=""):
     """sozai/opening_short.mp4 + date/DAY (white, same position as
     fast_bird_pipeline.py's motion-detection opening) + title (yellow, right
     below it) burned in, re-encoded to match the main clips' format so it can
     sit in the same xfade chain."""
     date_text, day_text = load_date_list(mmdd)
     line1 = f"{date_text}　{day_text}"
+    size1 = fit_fontsize(line1, width, OPENING_DATE_FONTSIZE)
+    size2 = fit_fontsize(title, width, OPENING_TITLE_FONTSIZE)
 
-    vf = (f"drawtext=fontfile='{FONT_PATH}':text='{esc(line1)}':fontsize=64:"
-          f"fontcolor=white:borderw=4:bordercolor=black:box=1:boxcolor=black@0.35:boxborderw=14:"
+    vf = (f"drawtext=fontfile='{FONT_PATH}':text='{esc(line1)}':fontsize={size1}:"
+          f"fontcolor=white:borderw=4:bordercolor=black:box=1:boxcolor=black@0.35:"
+          f"boxborderw={OPENING_BOX_BORDER}:"
           f"x=(w-text_w)/2:y=(h/2)-80")
     if title:
-        vf += (f",drawtext=fontfile='{FONT_PATH}':text='{esc(title)}':fontsize=54:"
-               f"fontcolor=yellow:borderw=4:bordercolor=black:box=1:boxcolor=black@0.35:boxborderw=14:"
+        vf += (f",drawtext=fontfile='{FONT_PATH}':text='{esc(title)}':fontsize={size2}:"
+               f"fontcolor=yellow:borderw=4:bordercolor=black:box=1:boxcolor=black@0.35:"
+               f"boxborderw={OPENING_BOX_BORDER}:"
                f"x=(w-text_w)/2:y=(h/2)+10")
 
-    out_path = os.path.join(tmp_dir, "opening_with_text.mp4")
+    out_path = os.path.join(tmp_dir, f"opening_with_text{suffix}.mp4")
     cmd = [
         "ffmpeg", "-y", "-i", OPENING_VIDEO, "-vf", vf,
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-s", f"{width}x{height}", "-r", str(fps),
@@ -98,7 +164,8 @@ def build_opening(mmdd, title, width, height, fps, tmp_dir):
     if result.returncode != 0:
         print(f"❌ オープニング作成失敗:\n{result.stderr.decode()[-1500:]}")
         sys.exit(1)
-    print(f"🎬 オープニング作成 ({line1}{' / ' + title if title else ''})")
+    print(f"🎬 オープニング作成 ({line1}{' / ' + title if title else ''}) "
+          f"fontsize={size1}/{size2}")
     return out_path
 
 
@@ -139,6 +206,58 @@ def build_ending_overlay_filter(label, out_label, total_dur, width, height):
     return f"[{label}]{top},{bottom}[{out_label}]"
 
 
+def render_short(mmdd, clip_files, title, out_path, width, height, fps, tmp_dir, part=None):
+    """Opening + clips -> one finished file. Returns its length in seconds."""
+    opening_path = build_opening(mmdd, title, width, height, fps, tmp_dir,
+                                 suffix=f"_part{part}" if part else "")
+    clip_files = [opening_path] + clip_files
+
+    print(f"🔗 結合対象: {len(clip_files)}本 (transition={TRANSITION}, {TRANSITION_DUR}s)")
+    durations = [get_duration(p) for p in clip_files]
+
+    inputs = []
+    for p in clip_files:
+        inputs += ["-i", p]
+
+    filter_parts = []
+    cum = durations[0]
+    prev_v, prev_a = "0:v", "0:a"
+    for i in range(1, len(clip_files)):
+        # Transitions need a minimum clip length to overlap into; guard
+        # against a clip shorter than the transition itself.
+        dur = min(TRANSITION_DUR, durations[i - 1] - 0.1, durations[i] - 0.1)
+        dur = max(dur, 0.1)
+        offset = cum - dur
+        vout, aout = f"v{i}", f"a{i}"
+        filter_parts.append(
+            f"[{prev_v}][{i}:v]xfade=transition={TRANSITION}:duration={dur:.2f}:"
+            f"offset={offset:.2f}[{vout}]")
+        filter_parts.append(f"[{prev_a}][{i}:a]acrossfade=d={dur:.2f}[{aout}]")
+        prev_v, prev_a = vout, aout
+        cum += durations[i] - dur
+
+    filter_parts.append(build_ending_overlay_filter(prev_v, "vfinal", cum, width, height))
+    prev_v = "vfinal"
+
+    cmd = ["ffmpeg", "-y"] + inputs + [
+        "-filter_complex", ";".join(filter_parts),
+        "-map", f"[{prev_v}]", "-map", f"[{prev_a}]",
+        # xfade negotiates its own internal pixel format (observed: yuv444p,
+        # High 4:4:4 Predictive profile) unless told otherwise, which plays
+        # in ffplay/VLC but common consumer editors (e.g. PowerDirector)
+        # reject it. Force standard 8-bit 4:2:0 to match cut_clips.py's output.
+        "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-profile:v", "high",
+        "-c:a", "aac",
+        out_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        print(f"❌ ffmpeg失敗:\n{result.stderr.decode()[-1500:]}")
+        sys.exit(1)
+    return cum
+
+
 def main():
     if len(sys.argv) != 2:
         print("Usage: python compile_shorts.py MMDD")
@@ -149,6 +268,7 @@ def main():
     with open(clips_path, encoding="utf-8") as f:
         data = json.load(f)
     title = data.get("title", "")
+    title_part2 = data.get("title_part2", "")
 
     clip_files = []
     for clip in data["clips"]:
@@ -162,59 +282,35 @@ def main():
         print("❌ 結合には最低2本のクリップが必要です。")
         sys.exit(1)
 
+    _, day_text = load_date_list(mmdd)
+
     with tempfile.TemporaryDirectory() as tmp_dir:
         width, height, fps = get_video_info(clip_files[0])
-        opening_path = build_opening(mmdd, title, width, height, fps, tmp_dir)
-        clip_files = [opening_path] + clip_files
-
-        print(f"🔗 結合対象: {len(clip_files)}本 (transition={TRANSITION}, {TRANSITION_DUR}s)")
         durations = [get_duration(p) for p in clip_files]
+        total = estimate_total(get_duration(OPENING_VIDEO), durations)
 
-        inputs = []
-        for p in clip_files:
-            inputs += ["-i", p]
+        if total <= MAX_SHORT_DUR:
+            groups = [(clip_files, title, None)]
+        else:
+            k = split_point(durations)
+            if not title_part2:
+                print("⚠️  clips.json に title_part2 が無いので part2 も同じタイトルにします")
+                title_part2 = title
+            groups = [(clip_files[:k], title, 1), (clip_files[k:], title_part2, 2)]
+            print(f"✂️  推定 {total:.1f}秒 が上限 {MAX_SHORT_DUR:.0f}秒 を超えるので2本に分割します"
+                  f"（part1: {k}本 / part2: {len(clip_files) - k}本）")
 
-        filter_parts = []
-        cum = durations[0]
-        prev_v, prev_a = "0:v", "0:a"
-        for i in range(1, len(clip_files)):
-            # Transitions need a minimum clip length to overlap into; guard
-            # against a clip shorter than the transition itself.
-            dur = min(TRANSITION_DUR, durations[i - 1] - 0.1, durations[i] - 0.1)
-            dur = max(dur, 0.1)
-            offset = cum - dur
-            vout, aout = f"v{i}", f"a{i}"
-            filter_parts.append(
-                f"[{prev_v}][{i}:v]xfade=transition={TRANSITION}:duration={dur:.2f}:"
-                f"offset={offset:.2f}[{vout}]")
-            filter_parts.append(f"[{prev_a}][{i}:a]acrossfade=d={dur:.2f}[{aout}]")
-            prev_v, prev_a = vout, aout
-            cum += durations[i] - dur
-
-        filter_parts.append(build_ending_overlay_filter(prev_v, "vfinal", cum, width, height))
-        prev_v = "vfinal"
-
-        filter_complex = ";".join(filter_parts)
-        out_path = os.path.join(OUT_DIR, f"{mmdd}_short.mp4")
-
-        cmd = ["ffmpeg", "-y"] + inputs + [
-            "-filter_complex", filter_complex,
-            "-map", f"[{prev_v}]", "-map", f"[{prev_a}]",
-            # xfade negotiates its own internal pixel format (observed: yuv444p,
-            # High 4:4:4 Predictive profile) unless told otherwise, which plays
-            # in ffplay/VLC but common consumer editors (e.g. PowerDirector)
-            # reject it. Force standard 8-bit 4:2:0 to match cut_clips.py's output.
-            "-pix_fmt", "yuv420p",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-profile:v", "high",
-            "-c:a", "aac",
-            out_path,
-        ]
-        result = subprocess.run(cmd, capture_output=True)
-        if result.returncode != 0:
-            print(f"❌ ffmpeg失敗:\n{result.stderr.decode()[-1500:]}")
-            sys.exit(1)
-
-    print(f"✅ {out_path} ({cum:.1f}秒)")
+        for files, part_title, part in groups:
+            out_path = build_out_path(mmdd, day_text, part_title, part)
+            dur = render_short(mmdd, files, part_title, out_path,
+                               width, height, fps, tmp_dir, part)
+            print(f"✅ {out_path} ({dur:.1f}秒)")
+            if dur > MAX_SHORT_DUR:
+                # Only ever split in two (that is the rule), so a day with a
+                # huge number of clips can still overflow. Say so rather than
+                # hand back an over-length file that looks fine.
+                print(f"   ⚠️  {MAX_SHORT_DUR:.0f}秒を超えています。"
+                      f"clips.jsonのクリップを減らすか手動で分けてください")
 
 
 if __name__ == "__main__":

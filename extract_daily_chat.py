@@ -30,27 +30,59 @@ def utc_to_jst(utc_str):
     utc_dt = datetime.strptime(utc_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     return utc_dt.astimezone(timezone(timedelta(hours=9)))
 
+def get_uploads_playlist_id(api_key, channel_id):
+    url = "https://www.googleapis.com/youtube/v3/channels"
+    params = {"part": "contentDetails", "id": channel_id, "key": api_key}
+    items = requests.get(url, params=params, timeout=30).json().get("items", [])
+    if not items:
+        return None
+    return items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+
+
+def list_recent_video_ids(api_key, channel_id, limit=120):
+    """Return the newest `limit` uploads of the channel, newest first.
+
+    search.list is not dependable for this: its index lags behind, and on
+    2026-09-18 it returned only nine videos for this channel, which silently
+    dropped 0914's morning slot (that day was then built from the evening
+    archive alone). The uploads playlist is exhaustive and costs 1 quota unit
+    per page instead of search's 100.
+    """
+    playlist_id = get_uploads_playlist_id(api_key, channel_id)
+    if not playlist_id:
+        return []
+    url = "https://www.googleapis.com/youtube/v3/playlistItems"
+    video_ids, token = [], None
+    while len(video_ids) < limit:
+        params = {"part": "contentDetails", "playlistId": playlist_id,
+                  "maxResults": 50, "key": api_key}
+        if token:
+            params["pageToken"] = token
+        res = requests.get(url, params=params, timeout=30).json()
+        video_ids.extend(i["contentDetails"]["videoId"] for i in res.get("items", []))
+        token = res.get("nextPageToken")
+        if not token:
+            break
+    return video_ids[:limit]
+
+
 def find_target_videos(api_key, channel_id, target_mmdd):
     """指定された日付(MMDD)の全動画をAPIで自動検索する"""
-    search_url = "https://www.googleapis.com/youtube/v3/search"
-    search_params = {
-        "part": "id", "channelId": channel_id, "order": "date",
-        "type": "video", "maxResults": 30, "key": api_key
-    }
-    search_res = requests.get(search_url, params=search_params).json()
-    video_ids = [item["id"]["videoId"] for item in search_res.get("items", [])]
-
+    video_ids = list_recent_video_ids(api_key, channel_id, limit=200)
     if not video_ids: return []
 
+    # videos.list caps at 50 ids per request.
     video_url = "https://www.googleapis.com/youtube/v3/videos"
-    video_params = {
-        "part": "snippet,liveStreamingDetails",
-        "id": ",".join(video_ids), "key": api_key
-    }
-    video_res = requests.get(video_url, params=video_params).json()
+    video_items = []
+    for i in range(0, len(video_ids), 50):
+        video_params = {
+            "part": "snippet,liveStreamingDetails",
+            "id": ",".join(video_ids[i:i + 50]), "key": api_key
+        }
+        video_items.extend(requests.get(video_url, params=video_params).json().get("items", []))
 
     target_videos = []
-    for item in video_res.get("items", []):
+    for item in video_items:
         if "liveStreamingDetails" not in item: continue
 
         start_time_utc = (item["liveStreamingDetails"].get("actualStartTime")

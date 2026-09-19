@@ -1,6 +1,6 @@
 ---
 name: extract-clips
-description: Step 1 of the bird-cam comment-based shorts pipeline (extract -> cut_clips.py -> compile_shorts.py). Read a day's merged chat log (marugoto/MMDD_output.txt) and pick short-clip candidates, writing marugoto/MMDD_clips.json for review before cutting. Use whenever the user asks to make/build a short (compilation) video for a date from the bird-cam comments, e.g. "0807のショート結合動画を作って", "0806のコメントからクリップ候補を作って", "0807の切り抜き作って", or "/extract-clips 0806" -- this is the required first step even if the user only asked for the final combined short, since cut_clips.py and compile_shorts.py both depend on the MMDD_clips.json this produces.
+description: Step 1 of the bird-cam comment-based shorts pipeline (extract -> cut_clips.py -> compile_shorts.py). Read a day's merged chat log (marugoto/MMDD_output.txt) and pick short-clip candidates, writing marugoto/MMDD_clips.json for review before cutting. Use whenever the user asks to make/build a short (compilation) video for a date from the bird-cam comments, e.g. "0807のショート結合動画を作って", "0806のコメントからクリップ候補を作って", "0807の切り抜き作って", or "/extract-clips 0806". Vague or interrogative phrasings are the same request, not yes/no questions: "0807のショートは作れる？", "0806の切り抜きある？" mean DO IT and report the result -- run through to the finished video without stopping for confirmation. This is the required first step even if the user only asked for the final combined short, since cut_clips.py and compile_shorts.py both depend on the MMDD_clips.json this produces.
 ---
 
 # コメントログからのクリップ候補抽出（ショート生成パイプラインの①）
@@ -12,8 +12,13 @@ description: Step 1 of the bird-cam comment-based shorts pipeline (extract -> cu
 ```
 ① このスキル（extract-clips）  marugoto/MMDD_output.txt → marugoto/MMDD_clips.json
 ② python cut_clips.py MMDD     marugoto/MMDD_clips.json → marugoto/shorts/MMDD_<id>.mp4
-③ python compile_shorts.py MMDD marugoto/shorts/MMDD_<id>.mp4 → marugoto/shorts/MMDD_short.mp4
+③ python compile_shorts.py MMDD marugoto/shorts/MMDD_<id>.mp4 → marugoto/MMDD_short_DAY<n>_<title>.mp4
 ```
+
+③の出力ファイル名にはDAY数とタイトルが入る（アップロード待ちのファイルを見分けるため）。
+3分を超える場合は`_part1_`/`_part2_`の2本に自動分割されるので、①では**タイトルを2つ**用意する
+（後述「title の生成」）。分割するかどうか・どこで割るかはスクリプトが尺から決めるので、
+AIが秒数を計算して判断しないこと。
 
 ユーザーが「MMDDのショート（結合）動画を作って」のように**最終成果物だけ**を頼んできた場合でも、
 `marugoto/MMDD_clips.json` が無ければ必ずこのスキルを先に実行し、そのあと②③をこの順で実行すること
@@ -42,6 +47,10 @@ description: Step 1 of the bird-cam comment-based shorts pipeline (extract -> cu
 `skipped` に理由付きで入れる。本文中に時刻表現が無くても具体的な実況内容があるコメントは
 スキップせず、後述「時刻表現の無い実況コメント」のルールで拾うこと（**なるべく多めに拾う**方針）。
 
+**`@Take1bit` は配信者本人（このリポジトリのユーザー）なので、内容によらず必ず `skipped` に入れる。**
+リアルタイムで実況することはほぼ無く、「いつもコメントありがとうございます」のような視聴者への
+挨拶・お礼が中心のため。`skipped` の理由には「配信者本人のコメントのため対象外」と書く。
+
 ### 採用対象の判定
 
 message 本文中に時刻表現（`H:MM`, `H:MM:SS`, `H時MM分` など）が含まれるコメントを対象にする。
@@ -64,10 +73,22 @@ message 本文中に時刻表現（`H:MM`, `H:MM:SS`, `H時MM分` など）が�
    例: `16:12:00と16:41からお口見えたよ!`
    → 1コメントから複数の `clips` エントリを作る（それぞれ単発時刻として1.のルールを適用）。
 
-4. **分単位まで**（秒の記載がない、例: `9:36 入口に来てくれた`）
-   → 書かれた分をそのまま`:00`（時報として発言された時刻）とみなし、前5秒・後25秒（計30秒）を切り出す。
-   例: `9:36` なら `cut_start=9:35:55`, `cut_end=9:36:25`。1分まるごと(60秒)は長すぎるため避ける。
+4. **分単位まで**（秒の記載がない、例: `9:25 入口に来てくれた`）
+   → 書かれた分をそのまま`:00`（時報として発言された時刻）とみなし、**前10秒・後10秒（計20秒）**を切り出す。
+   例: `9:25` なら `cut_start=9:24:50`, `cut_end=9:25:10`。
+   秒が分からないぶん幅は要るが、30秒だと間延びするので20秒に収めること。
    `confidence: low`。
+
+5. **本文の時刻が投稿時刻より後（未来）になっている**（例: `[18:20:12]` に投稿された `18:59:54 おかえり～`）
+   → 打ち間違いなのでそのまま使わない。**後続のコメントに訂正があればその時刻を採用する**
+   （実例: 2分後の `間違えました18:19:54です` → 18:19:54で切り出した）。
+   字幕は元コメントのままにして、訂正のコメントを `replies` に入れると視聴者にも伝わる。
+   訂正が見つからない場合は、時や分の打ち間違いを推測せず `skipped` に理由を書いて落とす。
+
+6. **時刻だけを言うコメント**（例: `18:08:03でしたね`）
+   → 直前のやり取りから何の出来事の時刻かを読み取って採用する
+   （実例: 「あれ、もう2羽いるね」「おかえり～」の後だったので帰巣の時刻と判断）。
+   根拠は `note` に書く。何の時刻か読み取れないときは `confidence: low` にして、その旨をnoteに書く。
 
 ### 時刻表現の無い実況コメント
 
@@ -80,11 +101,50 @@ message 本文中に時刻表現（`H:MM`, `H:MM:SS`, `H時MM分` など）が�
 単なる相槌・感想のみ（「かわいい」「見えた」「ねてる」だけ等、1〜2語で何が起きているか
 具体的に分からないもの）は対象外。
 
-→ `confidence: low` 固定。投稿時刻ブラケット `[HH:MM:SS]` から**12秒引いた時刻**を推定タイミングとし、
+→ `confidence: low` 固定。**投稿時刻ブラケット `[HH:MM:SS]` ＋ その日のズレ（実測）− 12秒**を推定タイミングとし、
 そこに1.と同じ前後余白（デフォルト前3秒・後8秒）を適用する。
-**注意**: このブラケット自体、動画ファイルの切り出しと同じ「配信開始時刻＋オフセット」の単純計算で
-生成されており、配信中の見えない停止/再接続の影響で数秒〜まれに分単位でズレることが実測で分かっている。
-そのため必ず `confidence: low` とし、noteに「ブラケット由来のため誤差の可能性あり」と明記すること。
+noteには「ブラケット由来のため誤差の可能性あり」と、実測したズレの値を必ず書くこと。
+
+#### ブラケットと映像のズレを先に実測する
+
+ブラケットは「配信開始時刻＋チャットのオフセット」で計算しただけの時刻で、映像に焼き込まれた時刻とは
+**日ごとにバラバラにズレる**（実測で −11秒〜+193秒）。同じ枠の中ではほぼ一定なので、
+このルールのクリップを1本でも作る日は、`clips.json` を書く前に**使う枠ごとに1回**、OCRでズレを測る。
+測らずに −12秒だけで切ると、ズレの大きい日は3分近く手前を切り出してしまい、
+しかも「それらしい映像」が写るので出来上がりを見ても気づけない。
+
+```python
+import cut_clips as cc
+import extract_daily_chat as edc
+
+MMDD, IDX, BRACKET = "0910", 2, "18:31:51"  # 日付・枠番号（input/MMDD/MMDD-IDX.mp4）・測るコメントのブラケット時刻
+api_key = edc.load_api_key()
+videos = edc.find_target_videos(api_key, edc.get_channel_id(api_key, edc.CHANNEL_HANDLE), MMDD)
+start = videos[IDX - 1]["start_time"]  # 秒まで入った配信開始時刻（ログの「17:50開始」は分までなので使えない）
+offset = cc.hms_to_sec(BRACKET) - (start.hour * 3600 + start.minute * 60 + start.second)
+observed = cc.grab_overlay_time(f"input/{MMDD}/{MMDD}-{IDX}.mp4", offset)
+print("ズレ（焼き込み − ブラケット）:", None if observed is None else observed - cc.hms_to_sec(BRACKET), "秒")
+```
+
+- 朝のコメントは1枠目（`IDX=1`）、夕方〜夜のコメントは2枠目（`IDX=2`）で測る。
+- `None`（OCR失敗）なら、同じ枠の別のコメントのブラケット時刻で測り直す。
+- 例：0910の夜枠は +75秒だったので、`[18:31:51]` のコメントは 18:31:51 + 75秒 − 12秒 = 18:32:54 を推定タイミングにした。
+- 開始時刻に `smart_bird_pipeline.find_unprocessed_dates` は使えない（⓪済みの日を返さない）。
+
+### 「ｶﾝ」（糞）コメントの間引き
+
+「ｶﾝ♪」「ｶﾝ」「カン」は雛が**糞をした瞬間**を指す実況で、常連さんが毎日いくつも時報を出す。
+1つだけ入れるぶんには面白いが、全部採用すると**糞ばかりの動画**になってしまうので、
+その日の採用は次の数まで絞ること。
+
+- カン系コメントの投稿者が**1人だけ** → **1つまで**
+- 投稿者が**2人以上** → **2つまで**（同じ人から2つではなく、別々の投稿者から1つずつ）
+
+どれを残すかは本文の情報量で決める。状況が伝わるものを優先し、時刻だけのものを落とす。
+例: `9:51:34 受け止めきれず ｶﾝ♪` は残す / `16:42:12 ｶﾝ♪` は落とす。
+
+落としたぶんは `skipped` に「カン（糞）コメントが多いため間引き」と理由を書く
+（黙って消さない）。この間引きは時刻表現の有無に関係なく、カン系すべてに適用する。
 
 ### 返信のマージ（AIでないと判断できない部分）
 
@@ -106,8 +166,14 @@ message 本文中に時刻表現（`H:MM`, `H:MM:SS`, `H時MM分` など）が�
 `marugoto/{MMDD}_output.txt` の全コメント（`skipped`含む）の中から、その日いちばん際立った・映える
 出来事を1つ選び、10文字以内の短いタイトルにする（例: 「おちりモフモフ」「パタパタ練習中」）。
 挨拶等の意味のないコメントは対象外。長い説明文ではなく、キャッチーな体言止め・短句にすること。
-このタイトルは②③でオープニング動画に自動で焼き込まれる（`compile_shorts.py`が`clips.json`の
-`title`フィールドを読む）。
+このタイトルは②③でオープニング動画に自動で焼き込まれ、出力ファイル名にも入る
+（`compile_shorts.py`が`clips.json`の`title`フィールドを読む）。
+
+**`title_part2` も必ず一緒に書くこと**（同じく10文字以内）。ショートが3分を超えると
+`compile_shorts.py` が2本に分割し、後半のオープニングとファイル名にこちらを使う。
+分割されなければ無視されるだけなので、**尺を気にせず常に2つ書く**。
+2つ目は「その日で2番目に際立った出来事」から選ぶ。`clips`は時系列順のままなので、
+可能なら**後半に出てくる出来事**をpart2のタイトルに選ぶと中身と合いやすい。
 
 ## 出力フォーマット
 
@@ -117,6 +183,7 @@ message 本文中に時刻表現（`H:MM`, `H:MM:SS`, `H時MM分` など）が�
 {
   "date": "MMDD",
   "title": "10文字以内のタイトル",
+  "title_part2": "10文字以内のタイトル（2本に分割されたときの後半用）",
   "clips": [
     {
       "id": "MMDD-01",
@@ -156,5 +223,6 @@ message 本文中に時刻表現（`H:MM`, `H:MM:SS`, `H時MM分` など）が�
 - ユーザーの依頼が「クリップ候補を作って」など**①だけ**なら、ここで止めてレビューしてもらう。
 - ユーザーの依頼が「ショート（結合）動画を作って」など**最終成果物**なら、報告した上でそのまま
   `python cut_clips.py {MMDD}` → `python compile_shorts.py {MMDD}` を続けて実行し、
-  最後に `marugoto/shorts/{MMDD}_short.mp4` ができたことを報告する（許可待ちで止まらない）。
+  最後に出来上がったファイル名と尺を報告する（許可待ちで止まらない）。
   ルールは会話を重ねて調整済みなので、通常はこの一気通貫で問題ない。
+  ③が2本に分割した場合は、part1/part2それぞれのファイル名・尺・タイトルを報告すること。
