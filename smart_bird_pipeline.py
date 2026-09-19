@@ -146,33 +146,51 @@ def parse_iso8601_duration(text):
     days, hours, minutes, seconds = (int(g) if g else 0 for g in match.groups())
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
+def get_uploads_playlist_id(api_key, channel_id):
+    url = "https://www.googleapis.com/youtube/v3/channels"
+    params = {"part": "contentDetails", "id": channel_id, "key": api_key}
+    items = requests.get(url, params=params, timeout=30).json().get("items", [])
+    if not items:
+        return None
+    return items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+
+
+def list_recent_video_ids(api_key, channel_id, limit=120):
+    """Return the newest `limit` uploads of the channel, newest first.
+
+    search.list is not dependable for this: its index lags behind, and on
+    2026-09-18 it returned only nine videos for this channel, which silently
+    dropped 0914's morning slot (that day was then built from the evening
+    archive alone). The uploads playlist is exhaustive and costs 1 quota unit
+    per page instead of search's 100.
+    """
+    playlist_id = get_uploads_playlist_id(api_key, channel_id)
+    if not playlist_id:
+        return []
+    url = "https://www.googleapis.com/youtube/v3/playlistItems"
+    video_ids, token = [], None
+    while len(video_ids) < limit:
+        params = {"part": "contentDetails", "playlistId": playlist_id,
+                  "maxResults": 50, "key": api_key}
+        if token:
+            params["pageToken"] = token
+        res = requests.get(url, params=params, timeout=30).json()
+        video_ids.extend(i["contentDetails"]["videoId"] for i in res.get("items", []))
+        token = res.get("nextPageToken")
+        if not token:
+            break
+    return video_ids[:limit]
+
+
 def find_unprocessed_dates(api_key, channel_id):
     """Return [(mmdd, video_list), ...] for unprocessed dates inside the
     lookback window, oldest first."""
-    # Two passes: the plain query keeps in-progress broadcasts visible (needed
-    # for the "still live -> skip this date" check below), while the
-    # eventType=completed query is immune to the channel's own edited
-    # re-uploads ("まるごと版"/"ハイライト版") crowding finished archives out
-    # of the maxResults window. Without the second pass, a burst of edited
-    # uploads can silently push one of a day's two livestream archives out of
-    # range, so only half that day's footage/chat ever gets processed.
-    search_url = "https://www.googleapis.com/youtube/v3/search"
-    video_ids = set()
-    for extra_params in ({}, {"eventType": "completed"}):
-        search_params = {
-            "part": "id", "channelId": channel_id, "order": "date",
-            "type": "video", "maxResults": 30, "key": api_key,
-            **extra_params,
-        }
-        search_res = requests.get(search_url, params=search_params, timeout=30).json()
-        video_ids.update(item["id"]["videoId"] for item in search_res.get("items", []))
+    video_ids = list_recent_video_ids(api_key, channel_id)
     if not video_ids:
         return []
 
-    # videos.list caps at 50 ids per request; the two searches above can
-    # together return up to 60 unique ids, so fetch in batches.
+    # videos.list caps at 50 ids per request, so fetch in batches.
     video_url = "https://www.googleapis.com/youtube/v3/videos"
-    video_ids = list(video_ids)
     video_items = []
     for i in range(0, len(video_ids), 50):
         video_params = {

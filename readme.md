@@ -81,7 +81,7 @@ python smart_bird_pipeline.py
 
 ### 処理の流れ
 
-1. **未処理の日付を一括検出** — 過去7日以内（`LOOKBACK_DAYS`）で `marugoto/` に成果物がない日付を**すべて**洗い出し、古い順に処理
+1. **未処理の日付を一括検出** — 過去7日以内（`LOOKBACK_DAYS`）で `marugoto/` に成果物がない日付を**すべて**洗い出し、古い順に処理。配信の一覧はチャンネルの「アップロード済み動画」プレイリストから取得します（`search.list` は取りこぼす → 罠5）
 2. **配信終了を確認** — 全配信が終了（`liveBroadcastContent == "none"`）していない日付はスキップし、他の日付の処理を続行
 3. **クライアント並列診断** — 5種類のプレイヤークライアントに**同時に**問い合わせ、実際に利用可能なフォーマット一覧を取得。使えるものだけを選ぶ
 4. **ダウンロード** — 実在する具体的なフォーマットID（例 `136+140`）を指定してDL。配信開始時刻順に `0615-1.mp4`, `0615-2.mp4` と自動リネーム
@@ -106,9 +106,9 @@ MAX_HEIGHT = 720                # resolution ceiling
 DURATION_TOLERANCE = 0.02       # accept a download within 2% of the expected length
 ```
 
-### ⚠️ YouTubeアーカイブの3つの罠
+### ⚠️ YouTubeアーカイブの5つの罠
 
-長時間ライブ配信のアーカイブDLには、独立した3つの落とし穴があります。v6.0はこれらを個別に対策しています。
+長時間ライブ配信のアーカイブを扱うには、独立した5つの落とし穴があります。罠1〜4はv6.0、罠5はv7.1で個別に対策しています。
 
 #### 罠1: コーデックの混在（AV1/VP9）
 
@@ -163,6 +163,14 @@ DLを強制終了したタイミングによっては、**mp4のヘッダ（moov
 # fails here even when its header still claims the full duration.
 ffmpeg -v error -sseof -30 -i video.mp4 -frames:v 1 -f null -
 ```
+
+#### 罠5: `search.list` は「あるはずの動画」を返さない
+
+その日の配信を探すのに `search.list` を使っていましたが、この索引は**反映が遅れる上に取りこぼします**。2026-09-18 にはこのチャンネルで**9本しか返らず**、0914の朝枠が一覧から消えていました。
+
+片方の枠しか見つからないと、その日はもう片方だけでダイジェストとチャットログが作られます。**出来上がりを見ても「朝は映っていない日」としか見えない**ので、欠けたこと自体に気づけないのが厄介なところです。
+
+**対策**: チャンネルの「アップロード済み動画」プレイリスト（`channels.list` → `relatedPlaylists.uploads`）を `playlistItems.list` で全ページ列挙します。こちらは取りこぼしが無く、APIクォータも1ページ1単位（`search.list` は1回100単位）で済みます。`smart_bird_pipeline.py` と `extract_daily_chat.py` の両方を同じ方式にしてあります。
 
 ---
 
@@ -302,6 +310,7 @@ python upload_videos.py 0910 --only short       # 片方の種類だけ
 
 - 概要欄とタグの文面は `sozai/description_short.txt` / `sozai/description_full.txt` / `sozai/upload_tags.txt` を編集すれば変えられます
 - シーズンが変わったら `upload_videos.py` の `SEASON` / `PLAYLIST_KEYWORDS` を更新してください（そのままだと「2年目」のリストに入り続けます）
+- アップ後は `videos.list` で公開状態を、`playlistItems.list` で再生リストの何番目かを読み直して確認します（`daily-shorts` スキルの手順）。公開で上げれば先頭に並ぶので、末尾のままなら公開になっていません
 
 ### 二重投稿の防止
 
@@ -651,6 +660,11 @@ OpenCVの`MOG2 (Mixture of Gaussians)`背景差分法をコア技術として採
 ---
 
 ## 📝 更新履歴
+
+### v7.1 (2026-09) - 配信の探し方を uploads プレイリストへ変更
+
+- ✅ `smart_bird_pipeline.py` / `extract_daily_chat.py` — その日の配信を探すのに `search.list` を使うのをやめ、チャンネルの「アップロード済み動画」プレイリストを全ページ列挙する方式に変更（罠5）。`search.list` は索引の反映が遅れる上に取りこぼし、2026-09-18 には9本しか返らず0914の朝枠が消えていた。APIクォータも1回100単位 → 1ページ1単位に軽くなる
+- ✅ `upload_videos.py` — docstringの「未監査プロジェクトからのアップロードは非公開にロックされる」を実測に合わせて修正（2026-09-11、ロックされず公開できた。readmeの記述と食い違っていた）
 
 ### v7.0 (2026-09) - ショート生成の強化とYouTube自動アップロード
 

@@ -17,8 +17,10 @@ Usage: python upload_videos.py MMDD [--privacy private|unlisted|public] [--only 
 Auth: uploader_credentials.json (OAuth desktop client) -> uploader_token.json.
 The first run prints a URL to open in the browser.
 
-Until the Cloud project passes YouTube's API compliance audit, YouTube locks
-every video uploaded through the API to private, whatever --privacy says.
+The docs say YouTube locks every video uploaded from an unaudited Cloud
+project to private, whatever --privacy says; in practice --privacy public
+came out public (measured 2026-09-11). It may still be locked down later, so
+read the upload back and check it is public before calling the day done.
 """
 import argparse
 import json
