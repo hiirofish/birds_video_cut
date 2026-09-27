@@ -170,7 +170,7 @@ ffmpeg -v error -sseof -30 -i video.mp4 -frames:v 1 -f null -
 
 片方の枠しか見つからないと、その日はもう片方だけでダイジェストとチャットログが作られます。**出来上がりを見ても「朝は映っていない日」としか見えない**ので、欠けたこと自体に気づけないのが厄介なところです。
 
-**対策**: チャンネルの「アップロード済み動画」プレイリスト（`channels.list` → `relatedPlaylists.uploads`）を `playlistItems.list` で全ページ列挙します。こちらは取りこぼしが無く、APIクォータも1ページ1単位（`search.list` は1回100単位）で済みます。`smart_bird_pipeline.py` と `extract_daily_chat.py` の両方を同じ方式にしてあります。
+**対策**: チャンネルの「アップロード済み動画」プレイリスト（`channels.list` → `relatedPlaylists.uploads`）を `playlistItems.list` で全ページ列挙します。こちらは取りこぼしが無く、クォータの面でも有利です。2026年9月時点の公式ドキュメントでは `search.list` は**1日100回までの専用枠**、`playlistItems.list` は他のエンドポイントと共有の **10,000単位/日**から1ページ1単位なので、200本を全列挙しても4単位で済みます。`smart_bird_pipeline.py` と `extract_daily_chat.py` の両方を同じ方式にしてあります。
 
 ---
 
@@ -306,10 +306,13 @@ python upload_videos.py 0910 --dry-run          # 認証・再生リストの確
 python upload_videos.py 0910                    # 非公開でアップ（テスト用）
 python upload_videos.py 0910 --privacy public   # 公開でアップ（本番）
 python upload_videos.py 0910 --only short       # 片方の種類だけ
+python upload_videos.py 0910 --notify none      # 購読者に通知せずにアップ
 ```
 
 - 概要欄とタグの文面は `sozai/description_short.txt` / `sozai/description_full.txt` / `sozai/upload_tags.txt` を編集すれば変えられます
 - シーズンが変わったら `upload_videos.py` の `SEASON` / `PLAYLIST_KEYWORDS` を更新してください（そのままだと「2年目」のリストに入り続けます）
+- **購読者への通知はショート版のみ**です（`NOTIFY_SUBSCRIBERS`）。まるごと版は毎日上がる長尺なので、通知すると同じ人に1日2回届いてしまいます。`--notify all` / `--notify none` で上書きできます
+- `notifySubscribers` は `videos.insert` の時にだけ読まれ、**既定値は true**。後から変えられないので、通知したくない動画は最初からそう指定して上げる必要があります
 - アップ後は `videos.list` で公開状態を、`playlistItems.list` で再生リストの何番目かを読み直して確認します（`daily-shorts` スキルの手順）。公開で上げれば先頭に並ぶので、末尾のままなら公開になっていません
 
 ### 二重投稿の防止
