@@ -27,6 +27,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
+import extract_daily_chat as edc
+
 # ==================== Settings ====================
 CHANNEL_HANDLE = "@Take1bit"
 FAST_BIRD_PIPELINE = "fast_bird_pipeline.py"
@@ -766,20 +768,21 @@ def process_daily_chat(mmdd, video_list):
         except OSError:
             pass
 
-    if not all_messages:
+    # Comments posted on the archive's video page (not the chat) -- see
+    # extract_daily_chat.video_comment_lines for why they're kept apart.
+    comment_lines = edc.video_comment_lines(load_api_key(), mmdd, video_list,
+                                            log=lambda m: say(mmdd, m))
+
+    all_messages.sort(key=lambda x: x[0])
+    output_txt_path = edc.write_output_txt(OUTPUT_ROOT, mmdd,
+                                           [text for _, text in all_messages],
+                                           comment_lines)
+    if not output_txt_path:
         say(mmdd, "  ⚠️ コメントが1件も取得できなかったため、テキストは作成しません。")
         return
 
-    all_messages.sort(key=lambda x: x[0])
-
-    os.makedirs(OUTPUT_ROOT, exist_ok=True)
-    output_txt_path = os.path.join(OUTPUT_ROOT, f"{mmdd}_output.txt")
-    with open(output_txt_path, "w", encoding="utf-8") as wf:
-        for _, text in all_messages:
-            wf.write(text + "\n")
-
     say(mmdd, f"  💾 チャットマージ完了 ➔ {output_txt_path} "
-              f"（総コメント数: {len(all_messages)}件）")
+              f"（チャット: {len(all_messages)}件 / 動画コメント: {len(comment_lines)}件）")
 
 # ---------------------------------------------------------------- per-date
 
