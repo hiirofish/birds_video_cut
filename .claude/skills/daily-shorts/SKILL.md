@@ -44,6 +44,10 @@ description: Run the whole bird-cam daily workflow end to end -- smart_bird_pipe
 ③の出力名にはDAY数と①が付けたタイトルが入る。3分を超える日は自動で2本に分かれ、
 後半には`clips.json`の`title_part2`が使われる。④の記録は`marugoto/MMDD_upload.json`。
 
+①〜④のスクリプトを `timeout` で包むときは、秒数を **`timeout 600 python …`**（通常）か
+**`timeout 900 python …`**（④のアップロード）のどちらかにする。許可ルールはこの2つだけなので、
+ほかの秒数だと無人実行中に確認待ちになる。⓪は `timeout` ではなくバックグラウンド実行にする。
+
 ---
 
 ## ⓪ DL＋動体検知＋チャットログ取得
