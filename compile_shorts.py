@@ -9,6 +9,7 @@ Output: marugoto/MMDD_short_DAY<n>_<title>.mp4, or, when the result would run
         past MAX_SHORT_DUR, two files _part1_/_part2_ with a title each.
 """
 import os
+import re
 import sys
 import json
 import tempfile
@@ -100,6 +101,35 @@ def load_date_list(mmdd):
     return date_jp, "DAY ??"
 
 
+def load_stream_schedule(mmdd):
+    """'朝 5:30〜7:00 ／ 夜 17:00〜18:30' for the ending, from the day's own
+    streams as smart_bird_pipeline.py logged them ("1本目 (05:30開始): ...
+    長さ=1:29:50"). The hours move with sunrise/sunset a few times a season;
+    reading them from the day itself keeps the card right without anyone
+    editing a constant (a short goes up the next day, so it can be one day
+    behind a change -- accepted). The end is rounded *up* to 10 minutes,
+    since a dropped stream logs a few minutes short (17:00 + 1:27:04 still
+    means the 18:30 slot). Returns None if the log has nothing usable."""
+    log_path = os.path.join("logs", f"{mmdd}_pipeline.log")
+    if not os.path.exists(log_path):
+        return None
+    with open(log_path, encoding="utf-8") as f:
+        text = f.read()
+    # The log is appended per run; only the last run's listing counts.
+    text = text[text.rfind("処理対象"):]
+    slots = []
+    for h, m, dh, dm, ds in re.findall(
+            r"\d+本目 \((\d\d):(\d\d)開始\).*?長さ=(\d+):(\d\d):(\d\d)", text):
+        start = int(h) * 60 + int(m)
+        dur = int(dh) * 60 + int(dm) + (1 if int(ds) else 0)
+        if dur == 0:
+            continue
+        end = -(-(start + dur) // 10) * 10
+        label = "朝" if start < 12 * 60 else "夜"
+        slots.append(f"{label} {start // 60}:{start % 60:02d}〜{end // 60}:{end % 60:02d}")
+    return " ／ ".join(slots) if slots else None
+
+
 def build_out_path(mmdd, day_text, title, part=None):
     """marugoto/MMDD_short[_partN]_DAY106_タイトル.mp4
 
@@ -169,14 +199,18 @@ def build_opening(mmdd, title, width, height, fps, tmp_dir, suffix=""):
     return out_path
 
 
-def build_ending_overlay_filter(label, out_label, total_dur, width, height):
+def build_ending_overlay_filter(label, out_label, total_dur, width, height, schedule=None):
     """Fade+slide in 'YouTube登録お願いします！' (above center) and
     'いつもコメントありがとうございます' (below center) during the last
     ENDING_OVERLAY_DUR seconds -- transparent text over whatever's already
     playing (the nest sits roughly center in the source footage), no extra
-    runtime. Top line appears first, bottom line follows shortly after."""
+    runtime. Top line appears first, bottom line follows shortly after.
+    With `schedule`, a third line under them points Shorts viewers at the
+    live stream ('毎日ライブ配信中' + the day's hours) -- the Shorts reach
+    new people, but the live views weren't growing with them."""
     appear_top = max(0.0, total_dur - ENDING_OVERLAY_DUR)
     appear_bottom = appear_top + 0.3
+    appear_schedule = appear_bottom + 0.3
     fd = ENDING_FADE_DUR
 
     def alpha_expr(appear):
@@ -203,7 +237,18 @@ def build_ending_overlay_filter(label, out_label, total_dur, width, height):
               f"x=(w-text_w)/2:y='{slide_y_expr(appear_bottom, y_bottom_target, y_bottom_target + 40)}':"
               f"alpha='{alpha_expr(appear_bottom)}'")
 
-    return f"[{label}]{top},{bottom}[{out_label}]"
+    chain = f"{top},{bottom}"
+    if schedule:
+        # Just under the subscribe banner: the bottom third is where
+        # cut_clips.py burns in the comment captions, which are still showing.
+        y_schedule_target = round(height * 0.22)
+        for i, line in enumerate(("毎日ライブ配信中", schedule)):
+            y = y_schedule_target + i * 46
+            chain += (f",drawtext=fontfile='{FONT_PATH}':text='{esc(line)}':fontsize=34:"
+                      f"fontcolor=white:borderw=3:bordercolor=black:box=1:boxcolor=black@0.45:boxborderw=10:"
+                      f"x=(w-text_w)/2:y='{slide_y_expr(appear_schedule, y, y - 40)}':"
+                      f"alpha='{alpha_expr(appear_schedule)}'")
+    return f"[{label}]{chain}[{out_label}]"
 
 
 def render_short(mmdd, clip_files, title, out_path, width, height, fps, tmp_dir, part=None):
@@ -236,7 +281,8 @@ def render_short(mmdd, clip_files, title, out_path, width, height, fps, tmp_dir,
         prev_v, prev_a = vout, aout
         cum += durations[i] - dur
 
-    filter_parts.append(build_ending_overlay_filter(prev_v, "vfinal", cum, width, height))
+    filter_parts.append(build_ending_overlay_filter(prev_v, "vfinal", cum, width, height,
+                                                    load_stream_schedule(mmdd)))
     prev_v = "vfinal"
 
     cmd = ["ffmpeg", "-y"] + inputs + [
@@ -283,6 +329,8 @@ def main():
         sys.exit(1)
 
     _, day_text = load_date_list(mmdd)
+    schedule = load_stream_schedule(mmdd)
+    print(f"📺 エンディングの配信時間: {schedule or '（ログに無いので表示しません）'}")
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         width, height, fps = get_video_info(clip_files[0])
